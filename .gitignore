@@ -1,2 +1,5 @@
 .history/
 settings.local.json
+
+# Test fixtures (large binary files at project root)
+/sample_*.mp4

@@ -31,9 +31,10 @@ import { VerificationToken } from './entities/verification-token.entity';
   controllers: [AuthController],
   providers: [
     AuthService,
+    JwtAuthGuard,
     { provide: APP_GUARD, useClass: JwtAuthGuard },
     { provide: APP_GUARD, useClass: ThrottlerGuard },
   ],
-  exports: [AuthService, JwtModule],
+  exports: [AuthService, JwtAuthGuard, JwtModule],
 })
 export class AuthModule {}
