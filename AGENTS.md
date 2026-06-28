@@ -4,38 +4,94 @@
 
 StreamTube — a video sharing platform (YouTube-like). Users can upload, manage, and publish videos. Anonymous users can watch freely; social features (comments, subscriptions, likes) require authentication.
 
-More info in the project overview: [docs/project-plan.md](docs/project-plan.md)
+**Current state:** Phases 01 (config base) + 02 (auth/users/channels) + 03 (upload + background processing + streaming) are implemented in the backend. Frontend (`next-frontend/`) is not yet initialized.
+
+More info in the project overview: [docs/project-plan.md](docs/project-plan.md). Phase 03 walkthrough: [SUBMIT.md](SUBMIT.md). Per-SI log: [docs/phases/phase-03-videos/progress.md](docs/phases/phase-03-videos/progress.md).
 
 ## Repository Structure
 
-This is a monorepo with two main areas:
+This is a monorepo with the following areas:
 
-- `nestjs-project/` — Backend API (NestJS 11, TypeScript, Express). Contains modules for users, channels, videos, comments, etc.
-- `docs/` — Project documentation, architecture diagrams, and planning.
-- `next-frontend/` (Next.js) — not yet initialized
+- `nestjs-project/` — Backend API (NestJS 11, TypeScript, Express). Modules: `auth/`, `users/`, `channels/`, `videos/`, plus a separate `worker/` (NestJS standalone bootstrap, not HTTP).
+- `docs/` — Project documentation, architecture diagrams, and per-phase plans + progress logs.
+- `next-frontend/` (Next.js) — not yet initialized.
 
 ## Architecture (C4 Container Diagram)
 
 See `docs/diagrams/software-arch.mermaid` for the full diagram. Key containers:
 
-- **Frontend** (Next.js) → calls API via REST, streams from Object Storage
-- **API** (Nest.js) → business rules, auth, reads/writes DB, uploads to storage, publishes jobs to queue, sends emails
-- **Video Worker** (FFmpeg) → consumes jobs from queue, processes videos, updates DB and storage
-- **Database** (PostgreSQL) → users, channels, videos, comments, likes
-- **Object Storage** (S3/MinIO) → video files and thumbnails
-- **Message Queue** (TBD) → video processing job queue
-- **Email Service** (SMTP) → account confirmation and password recovery
+- **Frontend** (Next.js, future) → calls API via REST, streams from Object Storage
+- **API** (NestJS) → business rules, auth, reads/writes DB, talks to Storage + Queue, sends emails
+- **Video Worker** (NestJS standalone) → consumes `process-video` jobs from BullMQ, runs `ffprobe` + `ffmpeg` via `fluent-ffmpeg`, uploads thumbnail to Storage, updates DB. Bootstrap: `src/worker/main.ts` (no HTTP).
+- **Database** (PostgreSQL) → users, channels, refresh_tokens, verification_tokens, **videos** (Phase 03)
+- **Object Storage** (MinIO in dev / S3 in prod) → video files at `videos/{channelId}/{videoId}/source.mp4` and thumbnails at `videos/{channelId}/{videoId}/thumb.jpg`
+- **Message Queue** (BullMQ + Redis) → `process-video` queue with `attempts: 3, backoff: exponential 1s`
+- **Email Service** (Mailpit in dev / SMTP in prod) → account confirmation + password reset
+
+### Phase 03 data model
+
+`videos` table: `id` (nanoid-21), `channel_id` (FK CASCADE), `title`, `description`, `status` (`rascunho`/`aguardando_upload`/`processando`/`pronto`/`erro`), `source_key`, `thumbnail_key`, `upload_id` (S3 multipart handle, null after `completeUpload`), `duration_seconds`, `width`, `height`, `size_bytes`, `mime_type`, `failure_reason`, `created_at`, `updated_at`. Indexes on `channel_id`, `status`, and `(channel_id, created_at DESC)`.
 
 ## Docker Networking
 
 This project runs entirely in Docker containers. When configuring connections between services (database, cache, queue, etc.), **always use the Docker Compose service name** as the host — never `localhost` or `127.0.0.1`.
 
-Inside a container, `localhost` refers to the container itself, not the host machine or other containers. Services communicate through the Docker Compose network using their service names (e.g., `db`, `nestjs-api`).
+Inside a container, `localhost` refers to the container itself, not the host machine or other containers. Services communicate through the Docker Compose network using their service names.
 
-- **Correct:** `DB_HOST=db` (the Compose service name)
-- **Wrong:** `DB_HOST=localhost`
+Compose service names in use:
+- `db` — PostgreSQL 17
+- `mailpit` — SMTP testing
+- `minio` — S3-compatible storage (Phase 03)
+- `redis` — BullMQ broker (Phase 03)
+- `nestjs-api` — the HTTP API
+- `video-worker` — the standalone worker (Phase 03)
 
-This applies to all environment variables, configuration files, and code that references service hosts.
+`STORAGE_ENDPOINT=http://minio:9000`, `QUEUE_HOST=redis` in `.env` — the API talks to MinIO and Redis by service name, not `localhost`.
+
+## Phase 03 modules (backend)
+
+```
+nestjs-project/src/
+├── videos/
+│   ├── entities/video.entity.ts        # @Entity('videos') with FK to channels
+│   ├── storage/                        # StorageService (S3 multipart + Range/206)
+│   │   ├── storage.service.ts          # createMultipartUpload, presignPartUrl,
+│   │   │                                # completeMultipartUpload, abort,
+│   │   │                                # getObjectStream (Range), putObject
+│   │   ├── storage.keys.ts              # buildSourceKey/buildThumbnailKey
+│   │   └── storage.module.ts
+│   ├── queue/                          # QueueModule (BullMQ producer)
+│   │   ├── videos-queue.constants.ts   # VIDEOS_QUEUE_NAME = 'process-video'
+│   │   ├── videos-queue.module.ts      # BullModule.forRoot + registerQueue
+│   │   └── videos-queue.producer.ts     # @InjectQueue, enqueueProcessVideo
+│   ├── streaming/
+│   │   ├── range-parser.util.ts        # parseRangeHeader: bytes=start-end
+│   │   └── range-parser.util.spec.ts   # 10 unit tests
+│   ├── guards/video-ownership.guard.ts # checks video.channel_id === user.channelId
+│   ├── dto/                             # UploadInitDto, UploadPartUrlDto, UploadCompleteDto
+│   ├── videos.repository.ts            # @InjectRepository(Video)
+│   ├── videos.service.ts               # initUpload/getPresignedPartUrl/
+│   │                                    # completeUpload (transaction) /abortUpload
+│   ├── videos.service.spec.ts          # 12 unit tests (mocked deps)
+│   ├── videos.service.integration-spec.ts # 4 integration tests (real DB+MinIO+Redis)
+│   ├── videos.controller.ts            # 6 endpoints + OpenAPI decorators
+│   └── videos.module.ts                # TypeOrm + Storage + Queue + VideosController
+├── worker/                             # Standalone NestJS bootstrap (no HTTP)
+│   ├── worker.module.ts                # Config + TypeORM + Bull + Storage
+│   ├── video-processor.service.ts      # @Processor(VIDEOS_QUEUE_NAME)
+│   │                                    # process() + @OnWorkerEvent('failed')
+│   ├── video-processor.service.spec.ts # 5 unit tests
+│   └── main.ts                          # NestFactory.createApplicationContext
+└── common/exceptions/domain.exception.ts # 6 new domain exceptions
+```
+
+### Key Phase 03 patterns
+
+- **S3 multipart upload via presigned URLs** — the client uploads directly to MinIO/S3 with PUT. The API only orchestrates (create → presign per part → complete → abort).
+- **`completeUpload` is transactional** — `markProcessing` + `completeMultipartUpload` + `enqueueProcessVideo` happen inside `dataSource.transaction(...)` so a S3 failure rolls back the `aguardando_upload` → `processando` transition.
+- **Worker is a separate `ApplicationContext`** — no HTTP, no controllers, no guards. Shares `ConfigModule`, `TypeOrmModule`, `BullModule`, `StorageService` with the API.
+- **Worker writes source bytes to a temp file** before calling `ffmpeg`/`ffprobe` — `fluent-ffmpeg` only accepts `string | stream.Readable` for the source, not `Buffer`.
+- **`upload_id` is a transactional handle, not persistent** — set in `aguardando_upload`, cleared on transition to `processando`. It is meaningless after the multipart is finalized.
 
 ## Working Principles
 
@@ -55,6 +111,34 @@ A change is only considered complete when **all** of the following pass:
 4. Lint passes: `npm run lint`.
 
 If any of these fails, the task is not done — fix the underlying issue before declaring completion.
+
+### Running tests in Docker
+
+All test commands run **inside** `nestjs-project/` via `docker compose -f nestjs-project/compose.yaml exec -T nestjs-api`:
+
+```bash
+# Unit + integration
+docker compose -f nestjs-project/compose.yaml exec -T nestjs-api \
+  npm test -- --runInBand
+
+# E2E
+docker compose -f nestjs-project/compose.yaml exec -T nestjs-api \
+  npm run test:e2e
+
+# Type check
+docker compose -f nestjs-project/compose.yaml exec -T nestjs-api \
+  npx tsc --noEmit
+
+# Lint (auto-fixable via --fix)
+docker compose -f nestjs-project/compose.yaml exec -T nestjs-api \
+  npm run lint
+
+# OpenAPI export
+docker compose -f nestjs-project/compose.yaml exec -T nestjs-api \
+  npm run openapi:export
+```
+
+The API and worker containers are `tail -f /dev/null` by default (per `Dockerfile.dev`). To run the dev server, start it manually with `npm run start:dev` (and `npm run start:worker` in the worker container) — they are not in the Compose `command` so they don't auto-restart on file changes.
 
 ## Git Conventions
 
