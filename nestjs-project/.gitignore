@@ -54,3 +54,10 @@ pids
 
 # Diagnostic reports (https://nodejs.org/api/report.html)
 report.[0-9]*.[0-9]*.[0-9]*.[0-9]*.json
+
+# Local MinIO data (docker volume mount)
+.data/
+
+# Test fixtures (large binary files)
+*.mp4
+!test/fixtures/**/*.mp4

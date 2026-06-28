@@ -82,7 +82,7 @@ export class AuthService {
   async login(
     dto: LoginDto,
   ): Promise<{ access_token: string; refresh_token: string }> {
-    const user = await this.usersService.findByEmail(dto.email);
+    const user = await this.usersService.findByEmailWithChannel(dto.email);
     if (!user) {
       throw new InvalidCredentialsException();
     }
@@ -113,7 +113,11 @@ export class AuthService {
     await this.refreshTokenRepository.save(refreshTokenRecord);
 
     return {
-      access_token: this.generateAccessToken(user.id, user.email),
+      access_token: this.generateAccessToken(
+        user.id,
+        user.email,
+        user.channel.id,
+      ),
       refresh_token: refreshToken,
     };
   }
@@ -161,7 +165,7 @@ export class AuthService {
 
     const record = await this.refreshTokenRepository.findOne({
       where: { token_hash: tokenHash },
-      relations: ['user'],
+      relations: ['user', 'user.channel'],
     });
 
     if (!record) {
@@ -188,6 +192,7 @@ export class AuthService {
           access_token: this.generateAccessToken(
             record.user_id,
             record.user.email,
+            record.user.channel.id,
           ),
           refresh_token: rawToken,
         };
@@ -228,7 +233,11 @@ export class AuthService {
     ]);
 
     return {
-      access_token: this.generateAccessToken(record.user_id, record.user.email),
+      access_token: this.generateAccessToken(
+        record.user_id,
+        record.user.email,
+        record.user.channel.id,
+      ),
       refresh_token: newRefreshToken,
     };
   }
@@ -281,9 +290,13 @@ export class AuthService {
       .execute();
   }
 
-  private generateAccessToken(userId: string, email: string): string {
+  private generateAccessToken(
+    userId: string,
+    email: string,
+    channelId: string,
+  ): string {
     return this.jwtService.sign(
-      { sub: userId, email },
+      { sub: userId, email, channelId },
       { expiresIn: this.authCfg.jwtAccessExpiration as StringValue },
     );
   }

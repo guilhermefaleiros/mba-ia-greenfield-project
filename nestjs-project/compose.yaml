@@ -1,17 +1,47 @@
 services:
   nestjs-api:
-    build: 
+    build:
       context: .
       dockerfile: Dockerfile.dev
     ports:
       - 3000:3000
     volumes:
       - .:/home/node/app
+    environment:
+      - DB_HOST=db
+      - DB_PORT=5432
+      - DB_USERNAME=streamtube
+      - DB_PASSWORD=streamtube
+      - DB_NAME=streamtube
+      - JWT_SECRET=change-me-in-production
+      - JWT_REFRESH_SECRET=change-me-refresh-in-production
+      - JWT_ACCESS_EXPIRATION=15m
+      - JWT_REFRESH_EXPIRATION=7d
+      - CONFIRMATION_TOKEN_EXPIRATION_HOURS=1
+      - PASSWORD_RESET_TOKEN_EXPIRATION_HOURS=1
+      - APP_URL=http://localhost:3000
+      - MAIL_HOST=mailpit
+      - MAIL_PORT=1025
+      - MAIL_FROM='"StreamTube" <noreply@streamtube.com>'
+      - NODE_ENV=development
+      - PORT=3000
+      - SWAGGER_ENABLED=true
+      - STORAGE_ENDPOINT=http://minio:9000
+      - STORAGE_REGION=us-east-1
+      - STORAGE_ACCESS_KEY_ID=streamtube-access-key
+      - STORAGE_SECRET_ACCESS_KEY=streamtube-secret-key
+      - STORAGE_BUCKET=streamtube-videos
+      - QUEUE_HOST=redis
+      - QUEUE_PORT=6379
     depends_on:
       db:
         condition: service_healthy
       mailpit:
         condition: service_started
+      minio:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
 
   db:
     image: postgres:17
@@ -33,4 +63,70 @@ services:
       - "1025:1025"
       - "8025:8025"
 
+  minio:
+    image: minio/minio:latest
+    command: server /data --console-address ":9001"
+    ports:
+      - "9000:9000"
+      - "9001:9001"
+    environment:
+      - MINIO_ROOT_USER=streamtube-access-key
+      - MINIO_ROOT_PASSWORD=streamtube-secret-key
+    volumes:
+      - ./.data/minio:/data
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:9000/minio/health/ready"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
 
+  redis:
+    image: redis:7-alpine
+    ports:
+      - "6379:6379"
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      timeout: 3s
+      retries: 5
+
+  video-worker:
+    build:
+      context: .
+      dockerfile: Dockerfile.dev
+    command: ["tail", "-f", "/dev/null"]
+    volumes:
+      - .:/home/node/app
+    environment:
+      - DB_HOST=db
+      - DB_PORT=5432
+      - DB_USERNAME=streamtube
+      - DB_PASSWORD=streamtube
+      - DB_NAME=streamtube
+      - JWT_SECRET=change-me-in-production
+      - JWT_REFRESH_SECRET=change-me-refresh-in-production
+      - JWT_ACCESS_EXPIRATION=15m
+      - JWT_REFRESH_EXPIRATION=7d
+      - CONFIRMATION_TOKEN_EXPIRATION_HOURS=1
+      - PASSWORD_RESET_TOKEN_EXPIRATION_HOURS=1
+      - APP_URL=http://localhost:3000
+      - MAIL_HOST=mailpit
+      - MAIL_PORT=1025
+      - MAIL_FROM="StreamTube" <noreply@streamtube.com>
+      - NODE_ENV=development
+      - PORT=3000
+      - SWAGGER_ENABLED=true
+      - STORAGE_ENDPOINT=http://minio:9000
+      - STORAGE_REGION=us-east-1
+      - STORAGE_ACCESS_KEY_ID=streamtube-access-key
+      - STORAGE_SECRET_ACCESS_KEY=streamtube-secret-key
+      - STORAGE_BUCKET=streamtube-videos
+      - QUEUE_HOST=redis
+      - QUEUE_PORT=6379
+    depends_on:
+      db:
+        condition: service_healthy
+      minio:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
