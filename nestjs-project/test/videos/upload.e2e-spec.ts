@@ -56,6 +56,23 @@ const PRODUCER_MOCK: { enqueueProcessVideo: jest.Mock } = {
   enqueueProcessVideo: jest.fn().mockResolvedValue({ jobId: 'mocked-job-1' }),
 };
 
+type ErrorBody = { error: string };
+type UploadInitBody = {
+  videoId: string;
+  uploadId: string;
+  bucket: string;
+  partSize: number;
+};
+type UploadCompleteBody = {
+  videoId: string;
+  status: string;
+  queuedJobId: string;
+};
+
+function bodyOf<T>(res: { body: unknown }): T {
+  return res.body as T;
+}
+
 describe('Videos upload (e2e, focused on HTTP contract)', () => {
   let app: INestApplication<App>;
   let dataSource: DataSource;
@@ -225,19 +242,20 @@ describe('Videos upload (e2e, focused on HTTP contract)', () => {
         .post('/videos/upload-init')
         .set('Authorization', `Bearer ${user1Jwt}`)
         .send({ mimeType: 'video/mp4' });
+      const body = bodyOf<UploadInitBody>(res);
 
       expect(res.status).toBe(201);
-      expect(res.body.videoId).toBeDefined();
-      expect(res.body.videoId).toHaveLength(21);
-      expect(res.body.uploadId).toBeTruthy();
-      expect(res.body.bucket).toBe('streamtube-videos');
-      expect(res.body.partSize).toBe(5242880);
+      expect(body.videoId).toBeDefined();
+      expect(body.videoId).toHaveLength(21);
+      expect(body.uploadId).toBeTruthy();
+      expect(body.bucket).toBe('streamtube-videos');
+      expect(body.partSize).toBe(5242880);
     });
   });
 
   describe('POST /videos/{videoId}/upload-part-url', () => {
     it("returns 403 with UPLOAD_NOT_OWNED on another user's video", async () => {
-      const a = await request(app.getHttpServer())
+      await request(app.getHttpServer())
         .post('/videos/upload-init')
         .set('Authorization', `Bearer ${user1Jwt}`)
         .send({ mimeType: 'video/mp4' });
@@ -245,14 +263,15 @@ describe('Videos upload (e2e, focused on HTTP contract)', () => {
         .post('/videos/upload-init')
         .set('Authorization', `Bearer ${user2Jwt}`)
         .send({ mimeType: 'video/mp4' });
+      const otherUpload = bodyOf<UploadInitBody>(b);
 
       const res = await request(app.getHttpServer())
-        .post(`/videos/${b.body.videoId}/upload-part-url`)
+        .post(`/videos/${otherUpload.videoId}/upload-part-url`)
         .set('Authorization', `Bearer ${user1Jwt}`)
         .send({ partNumber: 1 });
 
       expect(res.status).toBe(403);
-      expect(res.body.error).toBe('UPLOAD_NOT_OWNED');
+      expect(bodyOf<ErrorBody>(res).error).toBe('UPLOAD_NOT_OWNED');
     });
 
     it('returns 400 with VALIDATION_ERROR on partNumber: 0', async () => {
@@ -260,14 +279,15 @@ describe('Videos upload (e2e, focused on HTTP contract)', () => {
         .post('/videos/upload-init')
         .set('Authorization', `Bearer ${user1Jwt}`)
         .send({ mimeType: 'video/mp4' });
+      const upload = bodyOf<UploadInitBody>(init);
 
       const res = await request(app.getHttpServer())
-        .post(`/videos/${init.body.videoId}/upload-part-url`)
+        .post(`/videos/${upload.videoId}/upload-part-url`)
         .set('Authorization', `Bearer ${user1Jwt}`)
         .send({ partNumber: 0 });
 
       expect(res.status).toBe(400);
-      expect(res.body.error).toBe('VALIDATION_ERROR');
+      expect(bodyOf<ErrorBody>(res).error).toBe('VALIDATION_ERROR');
     });
   });
 
@@ -277,32 +297,34 @@ describe('Videos upload (e2e, focused on HTTP contract)', () => {
         .post('/videos/upload-init')
         .set('Authorization', `Bearer ${user1Jwt}`)
         .send({ mimeType: 'video/mp4' });
+      const upload = bodyOf<UploadInitBody>(init);
 
       const res = await request(app.getHttpServer())
-        .post(`/videos/${init.body.videoId}/upload-complete`)
+        .post(`/videos/${upload.videoId}/upload-complete`)
         .set('Authorization', `Bearer ${user1Jwt}`)
         .send({ parts: [] });
 
       expect(res.status).toBe(400);
-      expect(res.body.error).toBe('VALIDATION_ERROR');
+      expect(bodyOf<ErrorBody>(res).error).toBe('VALIDATION_ERROR');
     });
 
-    it('returns 200 with { videoId, status: "processando", queuedJobId } on happy path', async () => {
+    it('returns 200 with videoId, status processando, and queuedJobId on happy path', async () => {
       const init = await request(app.getHttpServer())
         .post('/videos/upload-init')
         .set('Authorization', `Bearer ${user1Jwt}`)
         .send({ mimeType: 'video/mp4' });
-      const videoId = init.body.videoId;
+      const videoId = bodyOf<UploadInitBody>(init).videoId;
 
       const res = await request(app.getHttpServer())
         .post(`/videos/${videoId}/upload-complete`)
         .set('Authorization', `Bearer ${user1Jwt}`)
         .send({ parts: [{ partNumber: 1, etag: 'etag-1' }] });
+      const body = bodyOf<UploadCompleteBody>(res);
 
       expect(res.status).toBe(200);
-      expect(res.body.videoId).toBe(videoId);
-      expect(res.body.status).toBe('processando');
-      expect(res.body.queuedJobId).toBeTruthy();
+      expect(body.videoId).toBe(videoId);
+      expect(body.status).toBe('processando');
+      expect(body.queuedJobId).toBeTruthy();
 
       const row = await videosRepository.findById(videoId);
       expect(row!.status).toBe(VIDEO_STATUS.processando);
@@ -316,13 +338,14 @@ describe('Videos upload (e2e, focused on HTTP contract)', () => {
         .post('/videos/upload-init')
         .set('Authorization', `Bearer ${user1Jwt}`)
         .send({ mimeType: 'video/mp4' });
+      const videoId = bodyOf<UploadInitBody>(init).videoId;
 
       const res = await request(app.getHttpServer())
-        .post(`/videos/${init.body.videoId}/upload-abort`)
+        .post(`/videos/${videoId}/upload-abort`)
         .set('Authorization', `Bearer ${user1Jwt}`);
 
       expect(res.status).toBe(204);
-      const row = await videosRepository.findById(init.body.videoId);
+      const row = await videosRepository.findById(videoId);
       expect(row!.status).toBe(VIDEO_STATUS.erro);
       expect(row!.failure_reason).toBe('aborted by user');
     });

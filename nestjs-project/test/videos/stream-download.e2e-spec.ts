@@ -11,6 +11,7 @@ import { ConfigModule } from '@nestjs/config';
 import { DataSource } from 'typeorm';
 import * as crypto from 'crypto';
 import { Readable } from 'node:stream';
+import type { Response as SuperagentResponse } from 'superagent';
 import request from 'supertest';
 import { App } from 'supertest/types';
 import { Channel } from '../../src/channels/entities/channel.entity';
@@ -33,18 +34,45 @@ const STREAMING_MIME = 'video/mp4';
 
 const MOCK_OBJECT_BUFFER = Buffer.alloc(2 * 1024 * 1024, 0x42);
 
+type ErrorBody = { error: string };
+type ObjectStreamResult = {
+  body: Readable;
+  contentLength: number;
+  contentRange?: string;
+  contentType: string;
+};
+type GetObjectStreamFn = (
+  key: string,
+  rangeHeader?: string,
+) => Promise<ObjectStreamResult>;
+
+function bodyOf<T>(res: { body: unknown }): T {
+  return res.body as T;
+}
+
+function bufferParser(
+  res: SuperagentResponse,
+  callback: (error: Error | null, body: unknown) => void,
+): void {
+  const chunks: Buffer[] = [];
+  res.on('data', (chunk: Buffer | string) => {
+    chunks.push(Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk));
+  });
+  res.on('end', () => callback(null, Buffer.concat(chunks)));
+}
+
 function makeObjectStreamMock(
   totalSize: number,
   contentType: string = STREAMING_MIME,
-): jest.Mock {
-  return jest.fn(async (key: string, rangeHeader?: string) => {
+): jest.MockedFunction<GetObjectStreamFn> {
+  return jest.fn((_: string, rangeHeader?: string) => {
     if (!rangeHeader) {
-      return {
+      return Promise.resolve({
         body: Readable.from(MOCK_OBJECT_BUFFER),
         contentLength: totalSize,
         contentRange: undefined,
         contentType,
-      };
+      });
     }
     const m = /^bytes=(\d+)-(\d+)$/.exec(rangeHeader);
     if (!m) {
@@ -53,12 +81,12 @@ function makeObjectStreamMock(
     const start = parseInt(m[1], 10);
     const end = Math.min(parseInt(m[2], 10), totalSize - 1);
     const slice = MOCK_OBJECT_BUFFER.subarray(start, end + 1);
-    return {
+    return Promise.resolve({
       body: Readable.from(slice),
       contentLength: slice.length,
       contentRange: `bytes ${start}-${end}/${totalSize}`,
       contentType,
-    };
+    });
   });
 }
 
@@ -66,8 +94,6 @@ describe('Videos stream & download (e2e)', () => {
   let app: INestApplication<App>;
   let dataSource: DataSource;
   let jwtService: JwtService;
-  let videosRepository: VideosRepository;
-  let getObjectStreamMock: jest.Mock;
   let user1: User;
   let channel1: Channel;
   let user1Jwt: string;
@@ -80,16 +106,12 @@ describe('Videos stream & download (e2e)', () => {
       presignPartUrl: jest.fn(),
       completeMultipartUpload: jest.fn(),
       abortMultipartUpload: jest.fn(),
-      getObjectStream: jest.fn(),
+      getObjectStream: makeObjectStreamMock(
+        MOCK_OBJECT_BUFFER.length,
+        STREAMING_MIME,
+      ),
       putObject: jest.fn(),
     };
-    getObjectStreamMock = storageMock.getObjectStream;
-    storageMock.getObjectStream = jest.fn((key: string, rangeHeader?: string) =>
-      makeObjectStreamMock(MOCK_OBJECT_BUFFER.length, STREAMING_MIME)(
-        key,
-        rangeHeader,
-      ),
-    );
 
     const moduleRef = await Test.createTestingModule({
       imports: [
@@ -191,7 +213,6 @@ describe('Videos stream & download (e2e)', () => {
 
     dataSource = moduleRef.get(DataSource);
     jwtService = moduleRef.get(JwtService);
-    videosRepository = moduleRef.get(VideosRepository);
   });
 
   afterAll(async () => {
@@ -207,12 +228,6 @@ describe('Videos stream & download (e2e)', () => {
   beforeEach(async () => {
     await cleanAllTables(dataSource);
     jest.clearAllMocks();
-    getObjectStreamMock = jest.fn((key: string, rangeHeader?: string) =>
-      makeObjectStreamMock(MOCK_OBJECT_BUFFER.length, STREAMING_MIME)(
-        key,
-        rangeHeader,
-      ),
-    );
 
     const userRepo = dataSource.getRepository(User);
     const channelRepo = dataSource.getRepository(Channel);
@@ -280,11 +295,7 @@ describe('Videos stream & download (e2e)', () => {
         .get(`/videos/${videoProntoId}/stream`)
         .set('Range', `bytes=${start}-${end}`)
         .buffer(true)
-        .parse((res, callback) => {
-          const chunks: Buffer[] = [];
-          res.on('data', (c) => chunks.push(c));
-          res.on('end', () => callback(null, Buffer.concat(chunks)));
-        });
+        .parse(bufferParser);
 
       expect(res.status).toBe(206);
       expect(res.headers['content-range']).toBe(
@@ -293,7 +304,7 @@ describe('Videos stream & download (e2e)', () => {
       expect(res.headers['accept-ranges']).toBe('bytes');
       expect(res.headers['content-length']).toBe(String(expected.length));
       expect(res.headers['content-type']).toMatch(/video\/mp4/);
-      const bodyBuf = res.body as Buffer;
+      const bodyBuf = bodyOf<Buffer>(res);
       expect(bodyBuf.length).toBe(expected.length);
       expect(crypto.createHash('sha256').update(bodyBuf).digest('hex')).toBe(
         expectedHash,
@@ -306,7 +317,7 @@ describe('Videos stream & download (e2e)', () => {
         .set('Range', 'bytes=100-99');
 
       expect(res.status).toBe(416);
-      expect(res.body.error).toBe('STREAM_RANGE_INVALID');
+      expect(bodyOf<ErrorBody>(res).error).toBe('STREAM_RANGE_INVALID');
     });
 
     it('1.2.b returns 416 on out-of-bounds range (parsed before MinIO call)', async () => {
@@ -315,7 +326,7 @@ describe('Videos stream & download (e2e)', () => {
         .set('Range', 'bytes=0-999999999999');
 
       expect(res.status).toBe(416);
-      expect(res.body.error).toBe('STREAM_RANGE_INVALID');
+      expect(bodyOf<ErrorBody>(res).error).toBe('STREAM_RANGE_INVALID');
     });
 
     it('1.2.c returns 416 on malformed range header', async () => {
@@ -324,7 +335,7 @@ describe('Videos stream & download (e2e)', () => {
         .set('Range', 'bytes=abc-def');
 
       expect(res.status).toBe(416);
-      expect(res.body.error).toBe('STREAM_RANGE_INVALID');
+      expect(bodyOf<ErrorBody>(res).error).toBe('STREAM_RANGE_INVALID');
     });
 
     it('1.2.d returns 409 with VIDEO_NOT_READY for a draft video', async () => {
@@ -333,7 +344,7 @@ describe('Videos stream & download (e2e)', () => {
       );
 
       expect(res.status).toBe(409);
-      expect(res.body.error).toBe('VIDEO_NOT_READY');
+      expect(bodyOf<ErrorBody>(res).error).toBe('VIDEO_NOT_READY');
     });
 
     it('1.2.e returns 404 with VIDEO_NOT_FOUND for a nonexistent video', async () => {
@@ -342,24 +353,20 @@ describe('Videos stream & download (e2e)', () => {
       );
 
       expect(res.status).toBe(404);
-      expect(res.body.error).toBe('VIDEO_NOT_FOUND');
+      expect(bodyOf<ErrorBody>(res).error).toBe('VIDEO_NOT_FOUND');
     });
 
     it('returns 200 with the full body when no Range header is sent', async () => {
       const res = await request(app.getHttpServer())
         .get(`/videos/${videoProntoId}/stream`)
         .buffer(true)
-        .parse((res, callback) => {
-          const chunks: Buffer[] = [];
-          res.on('data', (c) => chunks.push(c));
-          res.on('end', () => callback(null, Buffer.concat(chunks)));
-        });
+        .parse(bufferParser);
 
       expect(res.status).toBe(200);
       expect(res.headers['content-length']).toBe(
         String(MOCK_OBJECT_BUFFER.length),
       );
-      const bodyBuf = res.body as Buffer;
+      const bodyBuf = bodyOf<Buffer>(res);
       expect(bodyBuf.length).toBe(MOCK_OBJECT_BUFFER.length);
     });
   });
@@ -378,7 +385,7 @@ describe('Videos stream & download (e2e)', () => {
         .set('Authorization', `Bearer ${user1Jwt}`);
 
       expect(res.status).toBe(404);
-      expect(res.body.error).toBe('VIDEO_NOT_FOUND');
+      expect(bodyOf<ErrorBody>(res).error).toBe('VIDEO_NOT_FOUND');
     });
 
     it('1.3.c returns 409 with VIDEO_NOT_READY for a draft video', async () => {
@@ -387,7 +394,7 @@ describe('Videos stream & download (e2e)', () => {
         .set('Authorization', `Bearer ${user1Jwt}`);
 
       expect(res.status).toBe(409);
-      expect(res.body.error).toBe('VIDEO_NOT_READY');
+      expect(bodyOf<ErrorBody>(res).error).toBe('VIDEO_NOT_READY');
     });
 
     it('1.3.d returns 200 with Content-Disposition, Content-Type, and full body', async () => {
@@ -395,11 +402,7 @@ describe('Videos stream & download (e2e)', () => {
         .get(`/videos/${videoProntoId}/download`)
         .set('Authorization', `Bearer ${user1Jwt}`)
         .buffer(true)
-        .parse((res, callback) => {
-          const chunks: Buffer[] = [];
-          res.on('data', (c) => chunks.push(c));
-          res.on('end', () => callback(null, Buffer.concat(chunks)));
-        });
+        .parse(bufferParser);
 
       expect(res.status).toBe(200);
       expect(res.headers['content-type']).toMatch(/video\/mp4/);
@@ -409,7 +412,7 @@ describe('Videos stream & download (e2e)', () => {
       expect(res.headers['content-length']).toBe(
         String(MOCK_OBJECT_BUFFER.length),
       );
-      const bodyBuf = res.body as Buffer;
+      const bodyBuf = bodyOf<Buffer>(res);
       const expectedHash = crypto
         .createHash('sha256')
         .update(MOCK_OBJECT_BUFFER)

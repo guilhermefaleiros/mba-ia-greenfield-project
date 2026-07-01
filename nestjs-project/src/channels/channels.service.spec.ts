@@ -1,12 +1,24 @@
-import { QueryFailedError } from 'typeorm';
+import { DataSource, EntityManager, QueryFailedError } from 'typeorm';
 import { ChannelsService } from './channels.service';
 import { Channel } from './entities/channel.entity';
 
-function makeManager(overrides: Record<string, jest.Mock> = {}): any {
+type ManagerMock = {
+  findOne: jest.Mock<
+    Promise<Channel | null>,
+    [typeof Channel, { where: { nickname: string } }]
+  >;
+  create: jest.Mock<Channel, [typeof Channel, Partial<Channel>]>;
+  save: jest.Mock<Promise<Channel>, [Channel]>;
+};
+
+function makeManager(overrides: Partial<ManagerMock> = {}): ManagerMock {
   return {
-    findOne: jest.fn(),
-    create: jest.fn(),
-    save: jest.fn(),
+    findOne: jest.fn<
+      Promise<Channel | null>,
+      [typeof Channel, { where: { nickname: string } }]
+    >(),
+    create: jest.fn<Channel, [typeof Channel, Partial<Channel>]>(),
+    save: jest.fn<Promise<Channel>, [Channel]>(),
     ...overrides,
   };
 }
@@ -24,16 +36,36 @@ function makeChannel(nickname: string): Channel {
 }
 
 function makeUniqueError(): QueryFailedError {
-  const err = new QueryFailedError('INSERT', [], new Error()) as any;
-  err.code = '23505';
-  err.detail = 'Key (nickname)=(abc) already exists.';
+  const err = new QueryFailedError('INSERT', [], new Error());
+  const pgError = err as QueryFailedError & {
+    code: string;
+    detail: string;
+  };
+  pgError.code = '23505';
+  pgError.detail = 'Key (nickname)=(abc) already exists.';
   return err;
 }
 
-function makeDataSource(manager: any): any {
-  return {
-    transaction: jest.fn((cb: (manager: any) => Promise<any>) => cb(manager)),
+function makeDataSource(manager: ManagerMock): DataSource {
+  const transaction: DataSource['transaction'] = async <T>(
+    isolationOrCallback:
+      | ((entityManager: EntityManager) => Promise<T>)
+      | string,
+    maybeCallback?: (entityManager: EntityManager) => Promise<T>,
+  ): Promise<T> => {
+    const callback =
+      typeof isolationOrCallback === 'function'
+        ? isolationOrCallback
+        : maybeCallback;
+
+    if (!callback) {
+      throw new Error('transaction callback is required');
+    }
+
+    return callback(manager as unknown as EntityManager);
   };
+
+  return { transaction } as DataSource;
 }
 
 describe('ChannelsService', () => {

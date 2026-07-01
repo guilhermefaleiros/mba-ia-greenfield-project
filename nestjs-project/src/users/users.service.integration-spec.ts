@@ -9,7 +9,6 @@ import {
 } from '../test/create-test-data-source';
 import { User } from './entities/user.entity';
 import { UsersService } from './users.service';
-import { TestingModule } from '@nestjs/testing';
 
 const ALL_ENTITIES = [User, Channel, RefreshToken, VerificationToken];
 
@@ -122,6 +121,22 @@ describe('UsersService (integration)', () => {
 
       const result = await usersService.findByEmail('other@example.com');
       expect(result).toBeNull();
+    });
+  });
+
+  describe('findByEmailWithChannel', () => {
+    it('returns the user with channel and password selected', async () => {
+      const user = await usersService.createUserWithChannel(
+        'withchannel@example.com',
+        'secret_hash',
+      );
+
+      const result = await usersService.findByEmailWithChannel(user.email);
+
+      expect(result).not.toBeNull();
+      expect(result!.email).toBe(user.email);
+      expect(result!.password).toBe('secret_hash');
+      expect(result!.channel.id).toBe(user.channel.id);
     });
   });
 });

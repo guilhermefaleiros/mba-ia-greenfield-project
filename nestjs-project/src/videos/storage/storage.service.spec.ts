@@ -68,6 +68,14 @@ describe('StorageService (real SDK against MinIO)', () => {
     return key;
   }
 
+  function toBuffer(chunk: Buffer | Uint8Array | string): Buffer {
+    if (Buffer.isBuffer(chunk)) {
+      return chunk;
+    }
+
+    return Buffer.from(chunk);
+  }
+
   it('presignPartUrl returns a URL with minio host, path-style, and AWS4-HMAC-SHA256 query', async () => {
     const key = makeKey('presign-test');
     const { uploadId } = await service.createMultipartUpload(key, 'video/mp4');
@@ -105,8 +113,10 @@ describe('StorageService (real SDK against MinIO)', () => {
     expect(result.contentRange).toBeUndefined();
     expect(result.contentType).toMatch(/text\/plain/);
     const chunks: Buffer[] = [];
-    for await (const chunk of result.body) {
-      chunks.push(Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk));
+    for await (const chunk of result.body as AsyncIterable<
+      Buffer | Uint8Array | string
+    >) {
+      chunks.push(toBuffer(chunk));
     }
     expect(Buffer.concat(chunks).toString()).toBe(data.toString());
   });
@@ -121,8 +131,10 @@ describe('StorageService (real SDK against MinIO)', () => {
     expect(result.contentLength).toBe(1024);
     expect(result.contentRange).toBe(`bytes 0-1023/${data.length}`);
     const chunks: Buffer[] = [];
-    for await (const chunk of result.body) {
-      chunks.push(Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk));
+    for await (const chunk of result.body as AsyncIterable<
+      Buffer | Uint8Array | string
+    >) {
+      chunks.push(toBuffer(chunk));
     }
     expect(Buffer.concat(chunks).length).toBe(1024);
   });

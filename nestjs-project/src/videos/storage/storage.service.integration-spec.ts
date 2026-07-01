@@ -54,7 +54,7 @@ function httpRequest(
       },
       (res) => {
         const chunks: Buffer[] = [];
-        res.on('data', (c) => chunks.push(c));
+        res.on('data', (c: Buffer) => chunks.push(c));
         res.on('end', () =>
           resolve({
             statusCode: res.statusCode ?? 0,
@@ -68,6 +68,14 @@ function httpRequest(
     if (body) req.write(body);
     req.end();
   });
+}
+
+function toBuffer(chunk: Buffer | Uint8Array | string): Buffer {
+  if (Buffer.isBuffer(chunk)) {
+    return chunk;
+  }
+
+  return Buffer.from(chunk);
 }
 
 describe('StorageService end-to-end multipart round-trip (integration)', () => {
@@ -123,8 +131,10 @@ describe('StorageService end-to-end multipart round-trip (integration)', () => {
     expect(range.contentRange).toBe(`bytes 0-99/${partSize}`);
     expect(range.contentType).toMatch(/video\/mp4/);
     const chunks: Buffer[] = [];
-    for await (const chunk of range.body) {
-      chunks.push(Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk));
+    for await (const chunk of range.body as AsyncIterable<
+      Buffer | Uint8Array | string
+    >) {
+      chunks.push(toBuffer(chunk));
     }
     expect(Buffer.concat(chunks).length).toBe(100);
     expect(Buffer.concat(chunks)[0]).toBe(0xab);
@@ -135,8 +145,10 @@ describe('StorageService end-to-end multipart round-trip (integration)', () => {
     );
     expect(tail.contentLength).toBe(100);
     const tailChunks: Buffer[] = [];
-    for await (const chunk of tail.body) {
-      tailChunks.push(Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk));
+    for await (const chunk of tail.body as AsyncIterable<
+      Buffer | Uint8Array | string
+    >) {
+      tailChunks.push(toBuffer(chunk));
     }
     expect(Buffer.concat(tailChunks)[99]).toBe(0xcd);
   }, 30000);

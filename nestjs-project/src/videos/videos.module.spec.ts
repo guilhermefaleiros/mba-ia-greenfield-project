@@ -4,12 +4,14 @@ import { TypeOrmModule } from '@nestjs/typeorm';
 import { RefreshToken } from '../auth/entities/refresh-token.entity';
 import { VerificationToken } from '../auth/entities/verification-token.entity';
 import { Channel } from '../channels/entities/channel.entity';
+import appConfig from '../config/app.config';
+import authConfig from '../config/auth.config';
+import mailConfig from '../config/mail.config';
 import queueConfig from '../config/queue.config';
 import storageConfig from '../config/storage.config';
 import { createTestDataSource } from '../test/create-test-data-source';
 import { User } from '../users/entities/user.entity';
 import { Video } from './entities/video.entity';
-import { QueueModule } from './queue/videos-queue.module';
 import { VideosModule } from './videos.module';
 import { VideosRepository } from './videos.repository';
 
@@ -20,11 +22,10 @@ describe('VideosModule', () => {
     const module = await Test.createTestingModule({
       imports: [
         ConfigModule.forRoot({
-          load: [storageConfig, queueConfig],
+          load: [appConfig, authConfig, mailConfig, storageConfig, queueConfig],
           isGlobal: true,
         }),
         TypeOrmModule.forRoot(createTestDataSource(ALL_ENTITIES).options),
-        QueueModule,
         VideosModule,
       ],
     }).compile();
