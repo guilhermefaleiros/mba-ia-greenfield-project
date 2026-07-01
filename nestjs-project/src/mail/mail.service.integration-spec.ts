@@ -11,6 +11,21 @@ import { MAIL_SUBJECTS } from './mail.constants';
 import { MailModule } from './mail.module';
 import { MailService } from './mail.service';
 
+interface MailpitAddress {
+  Address: string;
+}
+
+interface MailpitMessageSummary {
+  ID: string;
+  Subject: string;
+  To: MailpitAddress[];
+  From: MailpitAddress;
+}
+
+interface MailpitMessageDetail {
+  HTML: string;
+}
+
 describe('MailService (integration)', () => {
   let mailService: MailService;
 
@@ -36,10 +51,16 @@ describe('MailService (integration)', () => {
       'token123',
     );
 
-    const messages = await getMailpitMessages();
+    const messages = (await getMailpitMessages()) as MailpitMessageSummary[];
     expect(messages).toHaveLength(1);
-    expect(messages[0].To[0].Address).toBe('user@example.com');
-    expect(messages[0].Subject).toBe(MAIL_SUBJECTS.CONFIRMATION);
+    const [message] = messages;
+    expect(message).toBeDefined();
+    if (message === undefined) {
+      throw new Error('Expected Mailpit confirmation message');
+    }
+
+    expect(message.To[0]?.Address).toBe('user@example.com');
+    expect(message.Subject).toBe(MAIL_SUBJECTS.CONFIRMATION);
   });
 
   it('sendConfirmationEmail renders the confirmation URL in the body', async () => {
@@ -49,8 +70,16 @@ describe('MailService (integration)', () => {
       'mytoken',
     );
 
-    const messages = await getMailpitMessages();
-    const detail = await getMailpitMessage(messages[0].ID);
+    const messages = (await getMailpitMessages()) as MailpitMessageSummary[];
+    const [message] = messages;
+    expect(message).toBeDefined();
+    if (message === undefined) {
+      throw new Error('Expected Mailpit confirmation message');
+    }
+
+    const detail = (await getMailpitMessage(
+      message.ID,
+    )) as MailpitMessageDetail;
 
     expect(detail.HTML).toContain('mytoken');
     expect(detail.HTML).toContain('Alice');
@@ -64,10 +93,16 @@ describe('MailService (integration)', () => {
       'resettoken',
     );
 
-    const messages = await getMailpitMessages();
+    const messages = (await getMailpitMessages()) as MailpitMessageSummary[];
     expect(messages).toHaveLength(1);
-    expect(messages[0].To[0].Address).toBe('user@example.com');
-    expect(messages[0].Subject).toBe(MAIL_SUBJECTS.PASSWORD_RESET);
+    const [message] = messages;
+    expect(message).toBeDefined();
+    if (message === undefined) {
+      throw new Error('Expected Mailpit reset message');
+    }
+
+    expect(message.To[0]?.Address).toBe('user@example.com');
+    expect(message.Subject).toBe(MAIL_SUBJECTS.PASSWORD_RESET);
   });
 
   it('sendPasswordResetEmail renders the reset URL and expiry notice in the body', async () => {
@@ -77,8 +112,16 @@ describe('MailService (integration)', () => {
       'resettoken',
     );
 
-    const messages = await getMailpitMessages();
-    const detail = await getMailpitMessage(messages[0].ID);
+    const messages = (await getMailpitMessages()) as MailpitMessageSummary[];
+    const [message] = messages;
+    expect(message).toBeDefined();
+    if (message === undefined) {
+      throw new Error('Expected Mailpit reset message');
+    }
+
+    const detail = (await getMailpitMessage(
+      message.ID,
+    )) as MailpitMessageDetail;
 
     expect(detail.HTML).toContain('resettoken');
     expect(detail.HTML).toContain('Bob');
@@ -89,11 +132,17 @@ describe('MailService (integration)', () => {
   it('both emails use the configured MAIL_FROM address as sender', async () => {
     await mailService.sendConfirmationEmail('user@example.com', 'Alice', 'tok');
 
-    const messages = await getMailpitMessages();
+    const messages = (await getMailpitMessages()) as MailpitMessageSummary[];
     const configuredFrom =
       process.env.MAIL_FROM ?? '"StreamTube" <noreply@streamtube.com>';
     const expectedAddress =
       configuredFrom.match(/<(.+)>/)?.[1] ?? configuredFrom;
-    expect(messages[0].From.Address).toBe(expectedAddress);
+    const [message] = messages;
+    expect(message).toBeDefined();
+    if (message === undefined) {
+      throw new Error('Expected Mailpit confirmation message');
+    }
+
+    expect(message.From.Address).toBe(expectedAddress);
   });
 });

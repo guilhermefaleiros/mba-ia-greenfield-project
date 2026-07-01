@@ -1,16 +1,28 @@
 import { BadRequestException, ArgumentsHost } from '@nestjs/common';
 import { ValidationExceptionFilter } from './validation-exception.filter';
 
+interface ValidationErrorResponse {
+  statusCode: number;
+  error: string;
+  message: unknown[];
+}
+
+interface MockHttpResponse {
+  json: (body: ValidationErrorResponse) => void;
+}
+
 describe('ValidationExceptionFilter', () => {
   let filter: ValidationExceptionFilter;
-  let mockJson: jest.Mock;
-  let mockStatus: jest.Mock;
+  let mockJson: jest.MockedFunction<(body: ValidationErrorResponse) => void>;
+  let mockStatus: jest.MockedFunction<(statusCode: number) => MockHttpResponse>;
   let mockHost: ArgumentsHost;
 
   beforeEach(() => {
     filter = new ValidationExceptionFilter();
     mockJson = jest.fn();
     mockStatus = jest.fn().mockReturnValue({ json: mockJson });
+    const rpcHost = {} as ReturnType<ArgumentsHost['switchToRpc']>;
+    const wsHost = {} as ReturnType<ArgumentsHost['switchToWs']>;
 
     mockHost = {
       switchToHttp: () => ({
@@ -19,8 +31,8 @@ describe('ValidationExceptionFilter', () => {
       }),
       getArgs: () => [],
       getArgByIndex: () => null,
-      switchToRpc: () => ({}) as any,
-      switchToWs: () => ({}) as any,
+      switchToRpc: () => rpcHost,
+      switchToWs: () => wsHost,
       getType: () => 'http',
     } as unknown as ArgumentsHost;
   });

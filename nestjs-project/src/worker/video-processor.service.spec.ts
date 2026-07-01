@@ -7,6 +7,30 @@ import { VideosRepository } from '../videos/videos.repository';
 import { StorageService } from '../videos/storage/storage.service';
 import { Video, VIDEO_STATUS } from '../videos/entities/video.entity';
 
+type RepoMock = {
+  createDraft: jest.MockedFunction<VideosRepository['createDraft']>;
+  findById: jest.MockedFunction<VideosRepository['findById']>;
+  findByIdForOwner: jest.MockedFunction<VideosRepository['findByIdForOwner']>;
+  markProcessing: jest.MockedFunction<VideosRepository['markProcessing']>;
+  markReady: jest.MockedFunction<VideosRepository['markReady']>;
+  markError: jest.MockedFunction<VideosRepository['markError']>;
+};
+
+type StorageMock = {
+  createMultipartUpload: jest.MockedFunction<
+    StorageService['createMultipartUpload']
+  >;
+  presignPartUrl: jest.MockedFunction<StorageService['presignPartUrl']>;
+  completeMultipartUpload: jest.MockedFunction<
+    StorageService['completeMultipartUpload']
+  >;
+  abortMultipartUpload: jest.MockedFunction<
+    StorageService['abortMultipartUpload']
+  >;
+  getObjectStream: jest.MockedFunction<StorageService['getObjectStream']>;
+  putObject: jest.MockedFunction<StorageService['putObject']>;
+};
+
 interface FfmpegMocks {
   call: jest.Mock;
   ffprobe: jest.Mock;
@@ -34,7 +58,7 @@ jest.mock('fluent-ffmpeg', () => {
 });
 
 jest.mock('node:fs', () => {
-  const actual = jest.requireActual('node:fs');
+  const actual = jest.requireActual<typeof import('node:fs')>('node:fs');
   return {
     ...actual,
     promises: {
@@ -92,29 +116,29 @@ function makeVideo(overrides: Partial<Video> = {}): Video {
 
 describe('VideoProcessorService (unit, mocked deps)', () => {
   let processor: VideoProcessorService;
-  let repo: jest.Mocked<VideosRepository>;
-  let storage: jest.Mocked<StorageService>;
+  let repoMock: RepoMock;
+  let storageMock: StorageMock;
   let moduleRef: TestingModule;
 
   beforeEach(async () => {
     jest.clearAllMocks();
 
-    const repoMock: jest.Mocked<VideosRepository> = {
+    repoMock = {
       createDraft: jest.fn(),
       findById: jest.fn(),
       findByIdForOwner: jest.fn(),
       markProcessing: jest.fn(),
       markReady: jest.fn().mockResolvedValue(undefined),
       markError: jest.fn().mockResolvedValue(undefined),
-    } as unknown as jest.Mocked<VideosRepository>;
-    const storageMock: jest.Mocked<StorageService> = {
+    };
+    storageMock = {
       createMultipartUpload: jest.fn(),
       presignPartUrl: jest.fn(),
       completeMultipartUpload: jest.fn(),
       abortMultipartUpload: jest.fn(),
       getObjectStream: jest.fn(),
       putObject: jest.fn(),
-    } as unknown as jest.Mocked<StorageService>;
+    };
 
     moduleRef = await Test.createTestingModule({
       providers: [
@@ -125,8 +149,6 @@ describe('VideoProcessorService (unit, mocked deps)', () => {
     }).compile();
 
     processor = moduleRef.get(VideoProcessorService);
-    repo = moduleRef.get(VideosRepository);
-    storage = moduleRef.get(StorageService);
   });
 
   afterEach(async () => {
@@ -172,28 +194,28 @@ describe('VideoProcessorService (unit, mocked deps)', () => {
 
   it('returns immediately when the video is already pronto (idempotency)', async () => {
     const video = makeVideo({ status: VIDEO_STATUS.pronto });
-    repo.findById.mockResolvedValue(video);
+    repoMock.findById.mockResolvedValue(video);
 
     await processor.process(makeJob());
 
-    expect(storage.getObjectStream).not.toHaveBeenCalled();
+    expect(storageMock.getObjectStream).not.toHaveBeenCalled();
     expect(mockFfprobe).not.toHaveBeenCalled();
-    expect(repo.markReady).not.toHaveBeenCalled();
+    expect(repoMock.markReady).not.toHaveBeenCalled();
   });
 
   it('throws when the video does not exist', async () => {
-    repo.findById.mockResolvedValue(null);
+    repoMock.findById.mockResolvedValue(null);
 
     await expect(processor.process(makeJob())).rejects.toThrow(
       'Video vid-id-1 not found',
     );
-    expect(storage.getObjectStream).not.toHaveBeenCalled();
+    expect(storageMock.getObjectStream).not.toHaveBeenCalled();
   });
 
   it('happy path: ffprobe + thumbnail + markReady', async () => {
     const video = makeVideo();
-    repo.findById.mockResolvedValue(video);
-    storage.getObjectStream.mockResolvedValue({
+    repoMock.findById.mockResolvedValue(video);
+    storageMock.getObjectStream.mockResolvedValue({
       body: Readable.from(Buffer.from('source-bytes')),
       contentLength: 11,
       contentType: 'video/mp4',
@@ -211,12 +233,12 @@ describe('VideoProcessorService (unit, mocked deps)', () => {
 
     expect(mockFfprobe).toHaveBeenCalled();
     expect(mockFfmpegCall).toHaveBeenCalled();
-    expect(storage.putObject).toHaveBeenCalledWith(
+    expect(storageMock.putObject).toHaveBeenCalledWith(
       'videos/channel-1/vid-id-1/thumb.jpg',
       Buffer.from('thumb-bytes'),
       'image/jpeg',
     );
-    expect(repo.markReady).toHaveBeenCalledWith('vid-id-1', {
+    expect(repoMock.markReady).toHaveBeenCalledWith('vid-id-1', {
       durationSeconds: 12.345,
       width: 1920,
       height: 1080,
@@ -227,8 +249,8 @@ describe('VideoProcessorService (unit, mocked deps)', () => {
 
   it('ffprobe error: rethrows so BullMQ retries; markError via onFailed', async () => {
     const video = makeVideo();
-    repo.findById.mockResolvedValue(video);
-    storage.getObjectStream.mockResolvedValue({
+    repoMock.findById.mockResolvedValue(video);
+    storageMock.getObjectStream.mockResolvedValue({
       body: Readable.from(Buffer.from('source-bytes')),
       contentLength: 11,
       contentType: 'video/mp4',
@@ -239,15 +261,11 @@ describe('VideoProcessorService (unit, mocked deps)', () => {
       'ffprobe-mock-failed',
     );
 
-    expect(repo.markError).not.toHaveBeenCalled();
+    expect(repoMock.markError).not.toHaveBeenCalled();
 
-    (processor as any).onFailed.call(
-      processor,
-      makeJob(),
-      new Error('ffprobe-mock-failed'),
-    );
+    processor.onFailed(makeJob(), new Error('ffprobe-mock-failed'));
     await new Promise((r) => setImmediate(r));
-    expect(repo.markError).toHaveBeenCalledWith(
+    expect(repoMock.markError).toHaveBeenCalledWith(
       'vid-id-1',
       'ffprobe-mock-failed',
     );
@@ -255,8 +273,8 @@ describe('VideoProcessorService (unit, mocked deps)', () => {
 
   it('thumbnail error: rethrows so BullMQ retries; markError via onFailed', async () => {
     const video = makeVideo();
-    repo.findById.mockResolvedValue(video);
-    storage.getObjectStream.mockResolvedValue({
+    repoMock.findById.mockResolvedValue(video);
+    storageMock.getObjectStream.mockResolvedValue({
       body: Readable.from(Buffer.from('source-bytes')),
       contentLength: 11,
       contentType: 'video/mp4',
@@ -274,7 +292,7 @@ describe('VideoProcessorService (unit, mocked deps)', () => {
       'ffmpeg-thumb-failed',
     );
 
-    expect(storage.putObject).not.toHaveBeenCalled();
-    expect(repo.markReady).not.toHaveBeenCalled();
+    expect(storageMock.putObject).not.toHaveBeenCalled();
+    expect(repoMock.markReady).not.toHaveBeenCalled();
   });
 });

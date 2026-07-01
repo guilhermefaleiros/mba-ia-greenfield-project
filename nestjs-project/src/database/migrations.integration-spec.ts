@@ -19,6 +19,18 @@ const MANAGED_TABLES = [
 
 const MANAGED_TYPES = ['verification_tokens_type_enum', 'videos_status_enum'];
 
+async function resetManagedSchema(dataSource: DataSource): Promise<void> {
+  for (const table of MANAGED_TABLES) {
+    await dataSource.query(`DROP TABLE IF EXISTS "${table}" CASCADE`);
+  }
+
+  for (const type of MANAGED_TYPES) {
+    await dataSource.query(`DROP TYPE IF EXISTS "${type}" CASCADE`);
+  }
+
+  await dataSource.query(`DROP TABLE IF EXISTS "migrations" CASCADE`);
+}
+
 describe('Database migrations (integration)', () => {
   let dataSource: DataSource;
 
@@ -37,15 +49,7 @@ describe('Database migrations (integration)', () => {
 
     await dataSource.initialize();
 
-    await Promise.all([
-      ...MANAGED_TABLES.map((table) =>
-        dataSource.query(`DROP TABLE IF EXISTS "${table}" CASCADE`),
-      ),
-      ...MANAGED_TYPES.map((type) =>
-        dataSource.query(`DROP TYPE IF EXISTS "${type}" CASCADE`),
-      ),
-      dataSource.query(`DROP TABLE IF EXISTS "migrations" CASCADE`),
-    ]);
+    await resetManagedSchema(dataSource);
   });
 
   afterAll(async () => {

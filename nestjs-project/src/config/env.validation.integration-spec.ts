@@ -10,11 +10,22 @@ const requiredEnv = {
   STORAGE_SECRET_ACCESS_KEY: 'secret-key',
 };
 
-const validate = (env: Record<string, string>) =>
+type EnvValidationValue = typeof requiredEnv & {
+  SWAGGER_ENABLED?: string;
+};
+
+interface EnvValidationResult {
+  error?: {
+    message: string;
+  };
+  value: EnvValidationValue;
+}
+
+const validate = (env: Record<string, string>): EnvValidationResult =>
   envValidationSchema.validate(
     { ...requiredEnv, ...env },
     { allowUnknown: true, abortEarly: false },
-  );
+  ) as EnvValidationResult;
 
 describe('envValidationSchema — SWAGGER_ENABLED', () => {
   it('should reject SWAGGER_ENABLED with an invalid value', () => {

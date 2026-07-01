@@ -43,10 +43,12 @@ export class UsersService {
   }
 
   async findByEmailWithChannel(email: string): Promise<User | null> {
-    return this.userRepository.findOne({
-      where: { email },
-      relations: ['channel'],
-    });
+    return this.userRepository
+      .createQueryBuilder('user')
+      .addSelect('user.password')
+      .leftJoinAndSelect('user.channel', 'channel')
+      .where('user.email = :email', { email })
+      .getOne();
   }
 
   async save(user: User): Promise<User> {
